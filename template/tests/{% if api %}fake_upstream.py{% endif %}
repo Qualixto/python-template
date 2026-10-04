@@ -1,0 +1,23 @@
+"""Stand-in for the upstream service, used by `invoke serve` and `invoke api-test`."""
+
+import argparse
+
+import uvicorn
+from fastapi import FastAPI, HTTPException
+
+ITEMS = {1: "Widget", 2: "Gadget"}
+
+app = FastAPI(title="Fake upstream")
+
+
+@app.get("/items/{item_id}")
+async def get_item(item_id: int) -> dict[str, int | str]:
+    if item_id not in ITEMS:
+        raise HTTPException(404)
+    return {"id": item_id, "name": ITEMS[item_id]}
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8001)
+    uvicorn.run(app, port=parser.parse_args().port)

@@ -1,0 +1,43 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import httpx2
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ValidationError
+
+
+class Item(BaseModel):
+    id: int
+    name: str
+
+
+def create_app(upstream: httpx2.AsyncClient) -> FastAPI:
+    """Build the API around an upstream client, so tests can inject a fake one."""
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        await upstream.aclose()
+
+    app = FastAPI(title="{{ project_name }}", lifespan=lifespan)
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/items/{item_id}")
+    async def get_item(item_id: int) -> Item:
+        try:
+            response = await upstream.get(f"/items/{item_id}")
+        except httpx2.HTTPError as exc:
+            raise HTTPException(502, "Upstream unavailable") from exc
+        if response.status_code == 404:
+            raise HTTPException(404, "Item not found")
+        if response.is_error:
+            raise HTTPException(502, "Upstream error")
+        try:
+            return Item.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(502, "Upstream returned an invalid item") from exc
+
+    return app

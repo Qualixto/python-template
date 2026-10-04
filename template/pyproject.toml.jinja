@@ -1,0 +1,57 @@
+[project]
+name = "{{ project_slug }}"
+version = "0.1.0"
+description = "{{ description }}"
+readme = "README.md"
+authors = [{ name = "{{ author_name }}", email = "{{ author_email }}" }]
+{%- if license != "Proprietary" %}
+license = "{{ license }}"
+{%- endif %}
+requires-python = ">={{ python_version }}"
+dependencies = [
+{%- if api %}
+    "fastapi>=0.142.2",
+    "httpx2>=2.13.1",
+    "pydantic>=2.13.5",
+    "uvicorn>=0.54.0",
+{%- endif %}
+]
+
+[project.scripts]
+{{ project_slug }} = "{{ package_name }}.__main__:main"
+
+[dependency-groups]
+dev = [
+    "invoke>=3.0.3",
+    "mypy>=2.4.0",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.10",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["{{ package_name }}"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+exclude_also = ['if __name__ == "__main__":']
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests", "tasks.py"]
