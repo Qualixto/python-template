@@ -1,0 +1,106 @@
+from collections.abc import Callable
+
+import httpx2
+import pytest
+from fastapi.testclient import TestClient
+
+from {{ package_name }}.api import create_app
+
+Handler = Callable[[httpx2.Request], httpx2.Response]
+
+
+def fake_upstream(handler: Handler) -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(
+        transport=httpx2.MockTransport(handler), base_url="http://upstream"
+    )
+
+
+def client_for(handler: Handler) -> TestClient:
+    return TestClient(create_app(fake_upstream(handler)))
+
+
+def respond(status: int, body: object = None) -> Handler:
+    return lambda _: httpx2.Response(status, json=body)
+
+
+def test_health() -> None:
+    response = client_for(respond(200)).get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_shutdown_closes_upstream_client() -> None:
+    upstream = fake_upstream(respond(200))
+
+    with TestClient(create_app(upstream)):
+        assert not upstream.is_closed
+
+    assert upstream.is_closed
+
+
+def test_get_item_returns_upstream_item() -> None:
+    response = client_for(respond(200, {"id": 1, "name": "Widget"})).get("/items/1")
+
+    assert response.status_code == 200
+    assert response.json() == {"id": 1, "name": "Widget"}
+
+
+def test_get_item_requests_the_item_from_upstream() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request.url.path)
+        return httpx2.Response(200, json={"id": 7, "name": "Widget"})
+
+    client_for(handler).get("/items/7")
+
+    assert seen == ["/items/7"]
+
+
+def test_get_item_not_found() -> None:
+    response = client_for(respond(404)).get("/items/999")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        respond(500),
+        respond(200, {"id": "not-a-number"}),
+        lambda _: httpx2.Response(200, content=b"not json"),
+    ],
+    ids=["upstream-error", "invalid-item", "invalid-json"],
+)
+def test_get_item_maps_bad_upstream_responses_to_502(handler: Handler) -> None:
+    response = client_for(handler).get("/items/1")
+
+    assert response.status_code == 502
+
+
+def test_get_item_upstream_unreachable() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("refused", request=request)
+
+    response = client_for(handler).get("/items/1")
+
+    assert response.status_code == 502
+
+
+def test_get_item_rejects_non_integer_id() -> None:
+    response = client_for(respond(200)).get("/items/abc")
+
+    assert response.status_code == 422
+
+
+def test_main_serves_app_on_configured_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    from {{ package_name }}.__main__ import main
+
+    served: dict[str, object] = {}
+    monkeypatch.setenv("PORT", "9123")
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: served.update(kw))
+
+    main()
+
+    assert served["port"] == 9123

@@ -1,0 +1,142 @@
+"""Development tasks. Run with `uv run invoke <task>`; CI runs the same tasks."""
+{% if api %}
+import os
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+{% endif %}
+from invoke.context import Context
+from invoke.exceptions import Exit
+from invoke.tasks import task
+
+IMAGE = "{{ project_slug }}"
+
+
+@task
+def format(c: Context) -> None:
+    """Fix lint issues and format the code."""
+    c.run("ruff check --fix", echo=True)
+    c.run("ruff format", echo=True)
+
+
+@task
+def lint(c: Context) -> None:
+    """Check version pins, lint, formatting, and types without changing files."""
+    c.run("sh scripts/check_python_version.sh", echo=True)
+    c.run("ruff check", echo=True)
+    c.run("ruff format --check", echo=True)
+    c.run("mypy", echo=True)
+
+
+@task
+def audit(c: Context) -> None:
+    """Check locked dependencies for known vulnerabilities."""
+    c.run("uv audit --preview-features audit-command", echo=True)
+
+
+@task
+def test(c: Context) -> None:
+    """Run the pytest suite with coverage."""
+    c.run("pytest", echo=True)
+{% if api %}
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def wait_for(
+    url: str, processes: Sequence[subprocess.Popen[bytes]] = (), timeout: float = 30.0
+) -> None:
+    """Poll ``url`` until it answers 200, failing early if a process has died."""
+    deadline = time.monotonic() + timeout
+    while True:
+        for process in processes:
+            if process.poll() is not None:
+                raise Exit(f"{process.args!r} exited early; port in use?")
+        try:
+            with urllib.request.urlopen(url, timeout=2):  # noqa: S310
+                return
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.5)
+
+
+@task
+def smoke(c: Context) -> None:
+    """Build the Docker image and check the container serves /health."""
+    c.run(f"docker build -t {IMAGE} .", echo=True)
+    container = f"{IMAGE}-smoke"
+    c.run(f"docker run -d --rm --name {container} -p 127.0.0.1::8000 {IMAGE}")
+    try:
+        result = c.run(f"docker port {container} 8000", hide=True)
+        if result is None:
+            raise Exit("Could not read the container's published port")
+        port = result.stdout.strip().rsplit(":", 1)[-1]
+        wait_for(f"http://127.0.0.1:{port}/health")
+    finally:
+        c.run(f"docker stop {container}", hide=True)
+
+
+@contextmanager
+def running_stack(port: int, upstream_port: int) -> Iterator[str]:
+    """Run the API against the fake upstream, yielding the API's base URL."""
+    processes = [
+        subprocess.Popen(  # noqa: S603
+            [sys.executable, "tests/fake_upstream.py", f"--port={upstream_port}"]
+        ),
+        subprocess.Popen(  # noqa: S603
+            [sys.executable, "-m", "{{ package_name }}"],
+            env={
+                **os.environ,
+                "UPSTREAM_URL": f"http://127.0.0.1:{upstream_port}",
+                "PORT": str(port),
+            },
+        ),
+    ]
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        wait_for(f"{base_url}/health", processes)
+        yield base_url
+    finally:
+        for process in processes:
+            process.terminate()
+            process.wait()
+
+
+@task
+def serve(c: Context, port: int = 8000, upstream_port: int = 8001) -> None:
+    """Run the API (default :8000) against the fake upstream (default :8001)."""
+    with running_stack(port, upstream_port) as base_url:
+        print(f"Serving on {base_url}, press Ctrl+C to stop")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+
+
+@task(name="api-test")
+def api_test(c: Context) -> None:
+    """Run the Bruno collection against the API and fake upstream (needs Node)."""
+    with running_stack(free_port(), free_port()) as base_url, c.cd("bruno"):
+        c.run(
+            f"npx --yes @usebruno/cli run --env local --env-var baseUrl={base_url}",
+            echo=True,
+        )
+{% else %}
+
+@task
+def smoke(c: Context) -> None:
+    """Build the Docker image and check the container runs."""
+    c.run(f"docker build -t {IMAGE} .", echo=True)
+    result = c.run(f"docker run --rm {IMAGE} smoke", echo=True)
+    if result is None or "Hello, smoke!" not in result.stdout:
+        raise Exit("Container did not print the expected greeting")
+{% endif -%}

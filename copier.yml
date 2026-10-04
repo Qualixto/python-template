@@ -1,0 +1,78 @@
+_min_copier_version: "9.5"
+_subdirectory: template
+_answers_file: .copier-answers.yml
+
+_message_after_copy: |
+  Created {{ project_name }} in {{ _copier_conf.dst_path }}.
+
+  Next steps:
+    cd {{ _copier_conf.dst_path }}
+    uv sync
+    uv run pre-commit install
+    uv run invoke --list
+
+_tasks:
+  - command: "[ -d .git ] || git init -q -b main"
+    when: "{{ _copier_operation == 'copy' }}"
+  - "uv lock"
+
+project_name:
+  type: str
+  help: Human-readable project name
+  validator: "{% if not project_name.strip() %}Required{% endif %}"
+
+project_slug:
+  type: str
+  help: Distribution and repository name
+  default: "{{ project_name.strip().lower().replace(' ', '-').replace('_', '-').replace('.', '-') }}"
+
+package_name:
+  type: str
+  help: Python import name
+  default: "{{ project_slug.replace('-', '_') }}"
+  validator: >-
+    {% if not package_name.isidentifier() or package_name != package_name.lower() %}
+    Must be a lowercase Python identifier
+    {% endif %}
+
+description:
+  type: str
+  help: One-line description
+  default: ""
+
+author_name:
+  type: str
+  help: Author name
+
+author_email:
+  type: str
+  help: Author email
+
+python_version:
+  type: str
+  help: Python version
+  choices:
+    - "3.12"
+    - "3.13"
+    - "3.14"
+  default: "3.13"
+
+api:
+  type: bool
+  help: Include a FastAPI service with a fake upstream and Bruno API tests?
+  default: false
+
+license:
+  type: str
+  help: Licence
+  choices:
+    - Apache-2.0
+    - MIT
+    - Proprietary
+  default: Apache-2.0
+
+copyright_holder:
+  type: str
+  help: Copyright holder
+  default: "{{ author_name }}"
+  when: "{{ license != 'Proprietary' }}"
